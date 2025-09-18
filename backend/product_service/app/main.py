@@ -1,4 +1,5 @@
 # week08/backend/product_service/app/main.py
+# adding a comment to trigger commit
 
 import logging
 import os
