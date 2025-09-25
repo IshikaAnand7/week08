@@ -26,12 +26,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Ensure package-lock.json exists
+        run: |
+          if [ ! -f 8.1P/week08/frontend/package-lock.json ]; then
+            echo "package-lock.json not found!"
+            exit 1
+          fi
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          # Path must be relative to repo root
           cache-dependency-path: 8.1P/week08/frontend/package-lock.json
 
       - name: Install dependencies
