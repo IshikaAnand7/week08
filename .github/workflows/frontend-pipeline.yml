@@ -2,17 +2,12 @@ name: Frontend Pipeline - CI/CD
 
 on:
   push:
-    branches:
-      - main
-      - develop
-      - 'feature/**'
+    branches: [ main, develop, 'feature/**' ]
     paths:
       - 'week08/frontend/**'
       - '.github/workflows/frontend-pipeline.yml'
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [ main, develop ]
     paths:
       - 'week08/frontend/**'
 
@@ -29,37 +24,40 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Show repo structure
-        run: ls -R
+      - name: List frontend directory
+        run: ls -al ${{ env.FRONTEND_DIR }}
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json
+          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json || ''
 
       - name: Install dependencies
         run: |
           if [ -f ${{ env.FRONTEND_DIR }}/package-lock.json ]; then
             npm ci --prefix ${{ env.FRONTEND_DIR }}
-          else
+          elif [ -f ${{ env.FRONTEND_DIR }}/package.json ]; then
             npm install --prefix ${{ env.FRONTEND_DIR }}
-          fi
+          else
+            echo "No package.json found, skipping install"
 
-      - name: Run lint (if exists)
+      - name: Run lint
         run: |
           if npm run lint --prefix ${{ env.FRONTEND_DIR }} --dry-run >/dev/null 2>&1; then
             npm run lint --prefix ${{ env.FRONTEND_DIR }}
-          fi
+          else
+            echo "No lint script found"
 
-      - name: Run tests (if exists)
+      - name: Run tests
         run: |
           if npm run test --prefix ${{ env.FRONTEND_DIR }} --dry-run >/dev/null 2>&1; then
             npm run test --prefix ${{ env.FRONTEND_DIR }}
-          fi
+          else
+            echo "No test script found"
 
-  build-and-push:
+  frontend-build:
     needs: frontend-ci
     runs-on: ubuntu-latest
     steps:
@@ -77,7 +75,11 @@ jobs:
 
       - name: Build and Push Docker Image
         run: |
-          TAG=$([[ "${{ github.ref }}" == "refs/heads/main" ]] && echo "prod-${{ env.IMAGE_TAG }}" || echo "staging-${{ env.IMAGE_TAG }}")
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG="prod-${{ env.IMAGE_TAG }}"
+          else
+            TAG="staging-${{ env.IMAGE_TAG }}"
+          fi
           docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG ${{ env.FRONTEND_DIR }}
           docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
 
@@ -85,8 +87,8 @@ jobs:
         run: az logout
         if: always()
 
-  deploy-frontend:
-    needs: build-and-push
+  frontend-deploy:
+    needs: frontend-build
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     steps:
@@ -98,18 +100,23 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Set AKS Context
+      - name: Set AKS Credentials
         run: |
           az aks get-credentials \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.CLUSTER_NAME }} \
             --overwrite-existing
 
-      - name: Deploy Frontend to AKS
+      - name: Deploy Frontend
         run: |
-          TAG=$([[ "${{ github.ref }}" == "refs/heads/main" ]] && echo "prod-${{ env.IMAGE_TAG }}" || echo "staging-${{ env.IMAGE_TAG }}")
-          sed -i "s|latest|$TAG|g" k8s/frontend.yaml
-          kubectl apply -f k8s/frontend.yaml
+          cd k8s
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG="prod-${{ env.IMAGE_TAG }}"
+          else
+            TAG="staging-${{ env.IMAGE_TAG }}"
+          fi
+          sed -i "s|latest|$TAG|g" frontend.yaml
+          kubectl apply -f frontend.yaml
 
       - name: Logout Azure
         run: az logout
