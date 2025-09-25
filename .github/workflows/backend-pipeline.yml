@@ -1,16 +1,15 @@
 name: Backend Pipeline - CI/CD
 
 on:
-  workflow_call:
-    outputs:
-      product_ip:
-        description: "Product service IP"
-        value: ${{ jobs.deploy-backend.outputs.product_ip }}
-      order_ip:
-        description: "Order service IP"
-        value: ${{ jobs.deploy-backend.outputs.order_ip }}
-    secrets:
-      inherit: true
+  push:
+    branches: [ main, develop, 'feature/**' ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-pipeline.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
 
 env:
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
@@ -35,7 +34,7 @@ jobs:
           --health-retries 5
         ports:
           - 5432:5432
-      
+
       order_db:
         image: postgres:15
         env:
@@ -94,7 +93,6 @@ jobs:
     needs: test-backend
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -106,7 +104,7 @@ jobs:
 
       - name: Login to Azure Container Registry
         run: |
-          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ secrets.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
 
       - name: Build and Push Docker Images
         run: |
@@ -132,7 +130,6 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -185,7 +182,3 @@ jobs:
       - name: Logout from Azure
         run: az logout
         if: always()
-
-    outputs:
-      product_ip: ${{ steps.get-ips.outputs.product_ip }}
-      order_ip: ${{ steps.get-ips.outputs.order_ip }}

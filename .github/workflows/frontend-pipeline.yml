@@ -1,19 +1,15 @@
 name: Frontend Pipeline - CI/CD
 
 on:
-  workflow_call:
-    inputs:
-      product_api_ip:
-        required: true
-        type: string
-      order_api_ip:
-        required: true
-        type: string
-      environment:
-        required: true
-        type: string
-    secrets:
-      inherit: true
+  push:
+    branches: [ main, develop, 'feature/**' ]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-pipeline.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'frontend/**'
 
 env:
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
@@ -62,7 +58,7 @@ jobs:
 
       - name: Login to Azure Container Registry
         run: |
-          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ secrets.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
 
       - name: Build and Push Frontend Image
         run: |
@@ -82,38 +78,4 @@ jobs:
     needs: build-frontend
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-    environment: ${{ inputs.environment }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Set AKS Context
-        run: |
-          az aks get-credentials \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --name ${{ secrets.CLUSTER_NAME }} \
-            --overwrite-existing
-
-      - name: Deploy Frontend
-        run: |
-          cd k8s/
-          if [[ "${{ inputs.environment }}" == "production" ]]; then
-            TAG="prod-${{ env.IMAGE_TAG }}"
-          else
-            TAG="staging-${{ env.IMAGE_TAG }}"
-          fi
-          sed -i "s|latest|$TAG|g" frontend.yaml
-          PRODUCT_API=${{ inputs.product_api_ip }}
-          ORDER_API=${{ inputs.order_api_ip }}
-          sed -i "s|{{PRODUCT_API}}|$PRODUCT_API|g" frontend.yaml
-          sed -i "s|{{ORDER_API}}|$ORDER_API|g" frontend.yaml
-          kubectl apply -f frontend.yaml
-
-      - name: Logout from Azure
-        run: az logout
-        if: always()
+    environment: ${{ github.ref
