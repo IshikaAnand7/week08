@@ -28,11 +28,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-        working-directory: frontend
 
       - name: Install dependencies
-        working-directory: frontend
         run: |
+          cd frontend
           if [ -f package.json ]; then
             npm ci
             if npm run lint --dry-run 2>/dev/null; then npm run lint; fi
@@ -88,7 +87,7 @@ jobs:
       - name: Set AKS Context
         run: |
           az aks get-credentials \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --name ${{ secrets.CLUSTER_NAME }} \
             --overwrite-existing
 
