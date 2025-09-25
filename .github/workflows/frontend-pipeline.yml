@@ -1,15 +1,206 @@
+# # 
+# name: Backend Pipeline - CI/CD
+
+# on:
+#   workflow_call:
+#     outputs:
+#       product_ip:
+#         description: "Product service IP"
+#         value: ${{ jobs.deploy-backend.outputs.product_ip }}
+#       order_ip:
+#         description: "Order service IP"
+#         value: ${{ jobs.deploy-backend.outputs.order_ip }}
+#     secrets:
+#       inherit: true
+
+# env:
+#   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+#   IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
+#   PYTHON_VERSION: '3.10'
+
+# jobs:
+#   test-backend:
+#     runs-on: ubuntu-latest
+#     services:
+#       product_db:
+#         image: postgres:15
+#         env:
+#           POSTGRES_USER: postgres
+#           POSTGRES_PASSWORD: postgres
+#           POSTGRES_DB: products
+#         options: >-
+#           --health-cmd "pg_isready -U postgres"
+#           --health-interval 10s
+#           --health-timeout 5s
+#           --health-retries 5
+#         ports:
+#           - 5432:5432
+
+#       order_db:
+#         image: postgres:15
+#         env:
+#           POSTGRES_USER: postgres
+#           POSTGRES_PASSWORD: postgres
+#           POSTGRES_DB: orders
+#         ports:
+#           - 5433:5432
+#         options: >-
+#           --health-cmd "pg_isready -U postgres"
+#           --health-interval 10s
+#           --health-timeout 5s
+#           --health-retries 5
+
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: ${{ env.PYTHON_VERSION }}
+#           cache: 'pip'
+
+#       - name: Install dependencies
+#         run: |
+#           pip install --upgrade pip
+#           for req in backend/*/requirements.txt; do
+#             echo "Installing $req"
+#             pip install -r "$req"
+#           done
+#           pip install pytest httpx
+
+#       - name: Run product service tests
+#         working-directory: backend/product_service
+#         env:
+#           POSTGRES_HOST: localhost
+#           POSTGRES_PORT: 5432
+#           POSTGRES_DB: products
+#           POSTGRES_USER: postgres
+#           POSTGRES_PASSWORD: postgres
+#         run: pytest tests --maxfail=1 --disable-warnings -v
+
+#       - name: Run order service tests
+#         working-directory: backend/order_service
+#         env:
+#           POSTGRES_HOST: localhost
+#           POSTGRES_PORT: 5433
+#           POSTGRES_DB: orders
+#           POSTGRES_USER: postgres
+#           POSTGRES_PASSWORD: postgres
+#         run: pytest tests --maxfail=1 --disable-warnings -v
+
+#   build-backend:
+#     needs: test-backend
+#     runs-on: ubuntu-latest
+#     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Azure Login
+#         uses: azure/login@v1
+#         with:
+#           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+#       - name: Login to Azure Container Registry
+#         run: |
+#           echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ secrets.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+
+#       - name: Build and Push Docker Images
+#         run: |
+#           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+#             TAG="prod-${{ env.IMAGE_TAG }}"
+#           else
+#             TAG="staging-${{ env.IMAGE_TAG }}"
+#           fi
+
+#           docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:$TAG ./backend/product_service/
+#           docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:$TAG
+
+#           docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:$TAG ./backend/order_service/
+#           docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:$TAG
+
+#       - name: Logout from Azure
+#         run: az logout
+#         if: always()
+
+#   deploy-backend:
+#     needs: build-backend
+#     runs-on: ubuntu-latest
+#     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+#     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       - name: Azure Login
+#         uses: azure/login@v1
+#         with:
+#           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+#       - name: Set AKS Context
+#         run: |
+#           az aks get-credentials \
+#             --resource-group ${{ secrets.RESOURCE_GROUP }} \
+#             --name ${{ secrets.CLUSTER_NAME }} \
+#             --overwrite-existing
+
+#       - name: Deploy backend to AKS
+#         run: |
+#           cd k8s/
+#           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+#             TAG="prod-${{ env.IMAGE_TAG }}"
+#           else
+#             TAG="staging-${{ env.IMAGE_TAG }}"
+#           fi
+
+#           sed -i "s|latest|$TAG|g" product-service.yaml
+#           sed -i "s|latest|$TAG|g" order-service.yaml
+
+#           kubectl apply -f configmaps.yaml
+#           kubectl apply -f secrets.yaml
+#           kubectl apply -f product-db.yaml
+#           kubectl apply -f order-db.yaml
+#           kubectl apply -f product-service.yaml
+#           kubectl apply -f order-service.yaml
+
+#       - name: Get Backend Service IPs
+#         id: get-ips
+#         run: |
+#           for i in {1..60}; do
+#             PRODUCT_IP=$(kubectl get svc product-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+#             ORDER_IP=$(kubectl get svc order-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+#             if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" ]]; then
+#               echo "product_ip=$PRODUCT_IP" >> $GITHUB_OUTPUT
+#               echo "order_ip=$ORDER_IP" >> $GITHUB_OUTPUT
+#               break
+#             fi
+#             sleep 5
+#           done
+
+#       - name: Logout from Azure
+#         run: az logout
+#         if: always()
+
+#     outputs:
+#       product_ip: ${{ steps.get-ips.outputs.product_ip }}
+#       order_ip: ${{ steps.get-ips.outputs.order_ip }}
 name: Frontend Pipeline - CI/CD
 
 on:
-  push:
-    branches: [ main, develop, 'feature/**' ]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/frontend-pipeline.yml'
-  pull_request:
-    branches: [ main, develop ]
-    paths:
-      - 'frontend/**'
+  workflow_call:
+    inputs:
+      product_api_ip:
+        required: true
+        type: string
+      order_api_ip:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+    secrets:
+      inherit: true
 
 env:
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
@@ -17,7 +208,6 @@ env:
   NODE_VERSION: '18'
 
 jobs:
-  # Stage 1: Build and Test Frontend
   test-frontend:
     runs-on: ubuntu-latest
     steps:
@@ -35,18 +225,15 @@ jobs:
         run: |
           if [ -f package.json ]; then
             npm ci
-            # Lint
             if npm run lint --dry-run 2>/dev/null; then
               npm run lint
             fi
-            # Test
             if npm run test --dry-run 2>/dev/null; then
               npm run test
             fi
           else
             echo "No package.json found, skipping npm steps"
 
-  # Stage 2: Build and Push Frontend Docker Image
   build-frontend:
     needs: test-frontend
     runs-on: ubuntu-latest
@@ -79,12 +266,11 @@ jobs:
         run: az logout
         if: always()
 
-  # Stage 3: Deploy Frontend to AKS
   deploy-frontend:
     needs: build-frontend
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
-    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+    environment: ${{ inputs.environment }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -104,7 +290,7 @@ jobs:
       - name: Deploy Frontend
         run: |
           cd k8s/
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          if [[ "${{ inputs.environment }}" == "production" ]]; then
             TAG="prod-${{ env.IMAGE_TAG }}"
           else
             TAG="staging-${{ env.IMAGE_TAG }}"
@@ -112,9 +298,8 @@ jobs:
 
           sed -i "s|latest|$TAG|g" frontend.yaml
 
-          # Replace backend API placeholders with actual IPs from backend pipeline
-          PRODUCT_API=${{ needs.backend-pipeline.outputs.product_ip || 'http://localhost:8000' }}
-          ORDER_API=${{ needs.backend-pipeline.outputs.order_ip || 'http://localhost:8001' }}
+          PRODUCT_API=${{ inputs.product_api_ip }}
+          ORDER_API=${{ inputs.order_api_ip }}
 
           sed -i "s|{{PRODUCT_API}}|$PRODUCT_API|g" frontend.yaml
           sed -i "s|{{ORDER_API}}|$ORDER_API|g" frontend.yaml
@@ -123,4 +308,3 @@ jobs:
 
       - name: Logout from Azure
         run: az logout
-        if: always()
