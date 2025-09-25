@@ -32,12 +32,12 @@ jobs:
       - name: Install dependencies
         run: |
           cd frontend
-          if [ -f package.json ]; then
+          if [ -f package-lock.json ]; then
             npm ci
             if npm run lint --dry-run 2>/dev/null; then npm run lint; fi
             if npm run test --dry-run 2>/dev/null; then npm run test; fi
           else
-            echo "No package.json found, skipping npm steps"
+            echo "No package-lock.json found, skipping npm steps"
 
   build-frontend:
     needs: test-frontend
