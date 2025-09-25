@@ -12,36 +12,30 @@ on:
       - 'week08/frontend/**'
 
 env:
-  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
-  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
   NODE_VERSION: '18'
+  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
+  FRONTEND_DIR: week08/frontend
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
 
 jobs:
   test-frontend:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: frontend
+        working-directory: ${{ env.FRONTEND_DIR }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show files in frontend directory
+      - name: Show files in frontend
         run: ls -al
-
-      - name: Create package-lock.json if missing
-        run: |
-          if [ ! -f package-lock.json ]; then
-            echo "package-lock.json not found, generating..."
-            npm install
-          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: package-lock.json
+          cache: npm
+          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json
 
       - name: Install dependencies
         run: npm ci || npm install
@@ -61,7 +55,6 @@ jobs:
   build-frontend:
     needs: test-frontend
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -71,18 +64,14 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Login to Azure Container Registry
+      - name: Login to ACR
         run: |
           echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
 
-      - name: Build and Push Frontend Image
+      - name: Build and Push Docker Image
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            TAG="prod-${{ env.IMAGE_TAG }}"
-          else
-            TAG="staging-${{ env.IMAGE_TAG }}"
-          fi
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG week08/frontend/
+          TAG=$([[ "${{ github.ref }}" == "refs/heads/main" ]] && echo "prod-${{ env.IMAGE_TAG }}" || echo "staging-${{ env.IMAGE_TAG }}")
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG ${{ env.FRONTEND_DIR }}
           docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
 
       - name: Logout from Azure
@@ -92,7 +81,6 @@ jobs:
   deploy-frontend:
     needs: build-frontend
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     steps:
       - name: Checkout repository
@@ -110,14 +98,10 @@ jobs:
             --name ${{ secrets.CLUSTER_NAME }} \
             --overwrite-existing
 
-      - name: Deploy Frontend
+      - name: Deploy Frontend to AKS
         run: |
           cd k8s/
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            TAG="prod-${{ env.IMAGE_TAG }}"
-          else
-            TAG="staging-${{ env.IMAGE_TAG }}"
-          fi
+          TAG=$([[ "${{ github.ref }}" == "refs/heads/main" ]] && echo "prod-${{ env.IMAGE_TAG }}" || echo "staging-${{ env.IMAGE_TAG }}")
           sed -i "s|latest|$TAG|g" frontend.yaml
           kubectl apply -f frontend.yaml
 
