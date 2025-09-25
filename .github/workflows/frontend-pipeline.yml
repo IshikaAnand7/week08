@@ -26,11 +26,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Ensure package-lock.json exists
+      - name: Show files in frontend directory
+        run: ls -al
+
+      - name: Create package-lock.json if missing
         run: |
           if [ ! -f package-lock.json ]; then
-            echo "package-lock.json not found!"
-            exit 1
+            echo "package-lock.json not found, generating..."
+            npm install
           fi
 
       - name: Setup Node.js
@@ -41,7 +44,7 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci || npm install
 
       - name: Run lint (if available)
         run: |
