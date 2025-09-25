@@ -13,8 +13,8 @@ on:
 
 env:
   NODE_VERSION: '18'
-  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
   FRONTEND_DIR: 8.1P/week08/frontend
+  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
 
 jobs:
@@ -28,22 +28,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json
+          cache: 'npm'
 
       - name: Install dependencies
         run: |
           cd ${{ env.FRONTEND_DIR }}
           npm ci || npm install
 
-      - name: Run lint (if available)
+      - name: Run lint (if exists)
         run: |
           cd ${{ env.FRONTEND_DIR }}
           if npm run lint --dry-run >/dev/null 2>&1; then
             npm run lint
           fi
 
-      - name: Run tests (if available)
+      - name: Run tests (if exists)
         run: |
           cd ${{ env.FRONTEND_DIR }}
           if npm run test --dry-run >/dev/null 2>&1; then
@@ -62,7 +61,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Login to ACR
+      - name: Login to Azure Container Registry
         run: |
           echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
 
