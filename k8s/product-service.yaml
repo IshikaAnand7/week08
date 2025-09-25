@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: product-service-container
-        image: durgeshsamariya.azurecr.io/product_service:latest
+        image: week08acr123.azurecr.io/product_service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -61,6 +61,8 @@ spec:
             configMapKeyRef:
               name: ecomm-config-w08e1 # ConfigMap name matches
               key: AZURE_SAS_TOKEN_EXPIRY_HOURS
+      imagePullSecrets:
+      - name: acr-auth
 ---
 apiVersion: v1
 kind: Service

@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: order-service-container
-        image: durgeshsamariya.azurecr.io/order_service:latest
+        image: week08acr123.azurecr.io/order_service:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -45,6 +45,8 @@ spec:
             configMapKeyRef:
               name: ecomm-config-w08e1
               key: PRODUCT_SERVICE_URL
+      imagePullSecrets:
+      - name: acr-auth       
 ---
 apiVersion: v1
 kind: Service
