@@ -13,7 +13,7 @@ on:
         required: true
         type: string
     secrets:
-      - inherit: true
+      inherit: true
 
 env:
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
@@ -103,4 +103,17 @@ jobs:
         run: |
           cd k8s/
           if [[ "${{ inputs.environment }}" == "production" ]]; then
-           
+            TAG="prod-${{ env.IMAGE_TAG }}"
+          else
+            TAG="staging-${{ env.IMAGE_TAG }}"
+          fi
+          sed -i "s|latest|$TAG|g" frontend.yaml
+          PRODUCT_API=${{ inputs.product_api_ip }}
+          ORDER_API=${{ inputs.order_api_ip }}
+          sed -i "s|{{PRODUCT_API}}|$PRODUCT_API|g" frontend.yaml
+          sed -i "s|{{ORDER_API}}|$ORDER_API|g" frontend.yaml
+          kubectl apply -f frontend.yaml
+
+      - name: Logout from Azure
+        run: az logout
+        if: always()
