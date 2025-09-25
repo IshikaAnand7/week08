@@ -31,6 +31,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
+          # Path must be relative to repo root
           cache-dependency-path: 8.1P/week08/frontend/package-lock.json
 
       - name: Install dependencies
