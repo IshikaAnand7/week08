@@ -1,37 +1,268 @@
+# name: Complete E-Commerce Pipeline
+# ##
+# on:
+#   push:
+#     branches: [ main, develop ]
+#   pull_request:
+#     branches: [ main, develop ]
+
+# jobs:
+#   # Backend Pipeline
+#   backend-pipeline:
+#     uses: ./.github/workflows/backend-pipeline.yml
+#     secrets: inherit
+
+#   # Frontend Pipeline (depends on backend for API IPs)
+#   frontend-pipeline:
+#     needs: backend-pipeline
+#     uses: ./.github/workflows/frontend-pipeline.yml
+#     secrets: inherit
+#     with:
+#       product_api_ip: ${{ needs.backend-pipeline.outputs.product_ip || 'http://localhost:8000' }}
+#       order_api_ip: ${{ needs.backend-pipeline.outputs.order_ip || 'http://localhost:8001' }}
+#       environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
+
+#   # Notification Job
+#   notify-completion:
+#     needs: [backend-pipeline, frontend-pipeline]
+#     runs-on: ubuntu-latest
+#     if: always()
+#     steps:
+#       - name: Notify Pipeline Status
+#         run: |
+#           if [[ "${{ needs.backend-pipeline.result }}" == "success" && "${{ needs.frontend-pipeline.result }}" == "success" ]]; then
+#             echo "✅ Pipeline completed successfully!"
+#           else
+#             echo "❌ Pipeline failed. Backend: ${{ needs.backend-pipeline.result }}, Frontend: ${{ needs.frontend-pipeline.result }}"
+#             exit 1
 name: Complete E-Commerce Pipeline
-##
+
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
 
+env:
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.10'
+  IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
+  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+
 jobs:
-  # Backend Pipeline
-  backend-pipeline:
-    uses: ./.github/workflows/backend-pipeline.yml
-    secrets: inherit
-
-  # Frontend Pipeline (depends on backend for API IPs)
-  frontend-pipeline:
-    needs: backend-pipeline
-    uses: ./.github/workflows/frontend-pipeline.yml
-    secrets: inherit
-    with:
-      product_api_ip: ${{ needs.backend-pipeline.outputs.product_ip || 'http://localhost:8000' }}
-      order_api_ip: ${{ needs.backend-pipeline.outputs.order_ip || 'http://localhost:8001' }}
-      environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
-
-  # Notification Job
-  notify-completion:
-    needs: [backend-pipeline, frontend-pipeline]
+  # Stage 1: Test Backend
+  test-backend:
     runs-on: ubuntu-latest
-    if: always()
+    services:
+      product_db:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: products
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      order_db:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orders
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5433:5432
     steps:
-      - name: Notify Pipeline Status
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install backend dependencies
         run: |
-          if [[ "${{ needs.backend-pipeline.result }}" == "success" && "${{ needs.frontend-pipeline.result }}" == "success" ]]; then
-            echo "✅ Pipeline completed successfully!"
+          pip install --upgrade pip
+          for req in backend/*/requirements.txt; do
+            pip install -r "$req"
+          done
+          pip install pytest httpx
+
+      - name: Run product service tests
+        working-directory: backend/product_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: products
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        run: pytest tests --maxfail=1 --disable-warnings -v
+
+      - name: Run order service tests
+        working-directory: backend/order_service
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5433
+          POSTGRES_DB: orders
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        run: pytest tests --maxfail=1 --disable-warnings -v
+
+  # Stage 2: Build & Push Backend Images
+  build-backend:
+    needs: test-backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR
+        run: |
+          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+
+      - name: Build & Push Backend Images
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG="prod-${{ env.IMAGE_TAG }}"
           else
-            echo "❌ Pipeline failed. Backend: ${{ needs.backend-pipeline.result }}, Frontend: ${{ needs.frontend-pipeline.result }}"
-            exit 1
+            TAG="staging-${{ env.IMAGE_TAG }}"
+          fi
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/product_service:$TAG ./backend/product_service/
+          docker push ${{ env.ACR_LOGIN_SERVER }}/product_service:$TAG
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/order_service:$TAG ./backend/order_service/
+          docker push ${{ env.ACR_LOGIN_SERVER }}/order_service:$TAG
+
+      - name: Logout from Azure
+        run: az logout
+        if: always()
+
+  # Stage 3: Deploy Backend
+  deploy-backend:
+    needs: build-backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set AKS context
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --name ${{ secrets.CLUSTER_NAME }} \
+            --overwrite-existing
+
+      - name: Deploy backend to AKS
+        run: |
+          cd k8s/
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG="prod-${{ env.IMAGE_TAG }}"
+          else
+            TAG="staging-${{ env.IMAGE_TAG }}"
+          fi
+          sed -i "s|latest|$TAG|g" product-service.yaml
+          sed -i "s|latest|$TAG|g" order-service.yaml
+          kubectl apply -f configmaps.yaml
+          kubectl apply -f secrets.yaml
+          kubectl apply -f product-db.yaml
+          kubectl apply -f order-db.yaml
+          kubectl apply -f product-service.yaml
+          kubectl apply -f order-service.yaml
+
+      - name: Get Backend Service IPs
+        id: get-ips
+        run: |
+          for i in {1..60}; do
+            PRODUCT_IP=$(kubectl get svc product-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            ORDER_IP=$(kubectl get svc order-service-w08e1 -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            if [[ -n "$PRODUCT_IP" && -n "$ORDER_IP" ]]; then
+              echo "PRODUCT_IP=$PRODUCT_IP" >> $GITHUB_ENV
+              echo "ORDER_IP=$ORDER_IP" >> $GITHUB_ENV
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Logout from Azure
+        run: az logout
+        if: always()
+
+  # Stage 4: Frontend
+  test-build-deploy-frontend:
+    needs: deploy-backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+            if npm run lint --dry-run 2>/dev/null; then npm run lint; fi
+            if npm run test --dry-run 2>/dev/null; then npm run test; fi
+          else
+            echo "No package.json found, skipping npm steps"
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login to ACR
+        run: |
+          echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
+
+      - name: Build & Push Frontend Image
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG="prod-${{ env.IMAGE_TAG }}"
+          else
+            TAG="staging-${{ env.IMAGE_TAG }}"
+          fi
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG ./frontend/
+          docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
+
+      - name: Deploy Frontend
+        run: |
+          cd k8s/
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            TAG="prod-${{ env.IMAGE_TAG }}"
+          else
+            TAG="staging-${{ env.IMAGE_TAG }}"
+          fi
+          sed -i "s|latest|$TAG|g" frontend.yaml
+          sed -i "s|{{PRODUCT_API}}|${{ env.PRODUCT_IP }}|g" frontend.yaml
+          sed -i "s|{{ORDER_API}}|${{ env.ORDER_IP }}|g" frontend.yaml
+          kubectl apply -f frontend.yaml
+
+      - name: Logout from Azure
+        run: az logout
+        if: always()
+
