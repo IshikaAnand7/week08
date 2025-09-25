@@ -4,12 +4,12 @@ on:
   push:
     branches: [ main, develop, 'feature/**' ]
     paths:
-      - '8.1P/week08/frontend/**'
+      - 'week08/frontend/**'
       - '.github/workflows/frontend-pipeline.yml'
   pull_request:
     branches: [ main, develop ]
     paths:
-      - '8.1P/week08/frontend/**'
+      - 'week08/frontend/**'
 
 env:
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
@@ -21,14 +21,14 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: 8.1P/week08/frontend
+        working-directory: week08/frontend
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Ensure package-lock.json exists
         run: |
-          if [ ! -f 8.1P/week08/frontend/package-lock.json ]; then
+          if [ ! -f package-lock.json ]; then
             echo "package-lock.json not found!"
             exit 1
           fi
@@ -38,7 +38,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-          cache-dependency-path: 8.1P/week08/frontend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -79,7 +79,7 @@ jobs:
           else
             TAG="staging-${{ env.IMAGE_TAG }}"
           fi
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG 8.1P/week08/frontend/
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG week08/frontend/
           docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
 
       - name: Logout from Azure
