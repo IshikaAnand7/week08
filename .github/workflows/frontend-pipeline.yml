@@ -2,58 +2,68 @@ name: Frontend Pipeline - CI/CD
 
 on:
   push:
-    branches: [ main, develop, 'feature/**' ]
+    branches:
+      - main
+      - develop
+      - 'feature/**'
     paths:
-      - '8.1P/week08/frontend/**'
+      - 'week08/frontend/**'
       - '.github/workflows/frontend-pipeline.yml'
   pull_request:
-    branches: [ main, develop ]
+    branches:
+      - main
+      - develop
     paths:
-      - '8.1P/week08/frontend/**'
+      - 'week08/frontend/**'
 
 env:
   NODE_VERSION: '18'
-  FRONTEND_DIR: 8.1P/week08/frontend
+  FRONTEND_DIR: week08/frontend
   IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
 
 jobs:
-  test-frontend:
+  frontend-ci:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Show repo structure
+        run: ls -R
+
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
+          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json
 
       - name: Install dependencies
         run: |
-          cd ${{ env.FRONTEND_DIR }}
-          npm ci || npm install
+          if [ -f ${{ env.FRONTEND_DIR }}/package-lock.json ]; then
+            npm ci --prefix ${{ env.FRONTEND_DIR }}
+          else
+            npm install --prefix ${{ env.FRONTEND_DIR }}
+          fi
 
       - name: Run lint (if exists)
         run: |
-          cd ${{ env.FRONTEND_DIR }}
-          if npm run lint --dry-run >/dev/null 2>&1; then
-            npm run lint
+          if npm run lint --prefix ${{ env.FRONTEND_DIR }} --dry-run >/dev/null 2>&1; then
+            npm run lint --prefix ${{ env.FRONTEND_DIR }}
           fi
 
       - name: Run tests (if exists)
         run: |
-          cd ${{ env.FRONTEND_DIR }}
-          if npm run test --dry-run >/dev/null 2>&1; then
-            npm run test
+          if npm run test --prefix ${{ env.FRONTEND_DIR }} --dry-run >/dev/null 2>&1; then
+            npm run test --prefix ${{ env.FRONTEND_DIR }}
           fi
 
-  build-frontend:
-    needs: test-frontend
+  build-and-push:
+    needs: frontend-ci
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Azure Login
@@ -61,27 +71,26 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Login to Azure Container Registry
+      - name: Login to ACR
         run: |
           echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
 
       - name: Build and Push Docker Image
         run: |
-          cd ${{ env.FRONTEND_DIR }}
           TAG=$([[ "${{ github.ref }}" == "refs/heads/main" ]] && echo "prod-${{ env.IMAGE_TAG }}" || echo "staging-${{ env.IMAGE_TAG }}")
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG .
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG ${{ env.FRONTEND_DIR }}
           docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
 
-      - name: Logout from Azure
+      - name: Logout Azure
         run: az logout
         if: always()
 
   deploy-frontend:
-    needs: build-frontend
+    needs: build-and-push
     runs-on: ubuntu-latest
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Azure Login
@@ -98,11 +107,10 @@ jobs:
 
       - name: Deploy Frontend to AKS
         run: |
-          cd k8s/
           TAG=$([[ "${{ github.ref }}" == "refs/heads/main" ]] && echo "prod-${{ env.IMAGE_TAG }}" || echo "staging-${{ env.IMAGE_TAG }}")
-          sed -i "s|latest|$TAG|g" frontend.yaml
-          kubectl apply -f frontend.yaml
+          sed -i "s|latest|$TAG|g" k8s/frontend.yaml
+          kubectl apply -f k8s/frontend.yaml
 
-      - name: Logout from Azure
+      - name: Logout Azure
         run: az logout
         if: always()
