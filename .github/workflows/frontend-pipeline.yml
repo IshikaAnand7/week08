@@ -1,11 +1,10 @@
-name: Frontend Pipeline - CI/CD
+name: Frontend CI/CD - Clean
 
 on:
   push:
     branches: [ main, develop, 'feature/**' ]
     paths:
       - 'week08/frontend/**'
-      - '.github/workflows/frontend-pipeline.yml'
   pull_request:
     branches: [ main, develop ]
     paths:
@@ -13,55 +12,54 @@ on:
 
 env:
   NODE_VERSION: '18'
-  FRONTEND_DIR: week08/frontend
+  FRONTEND_PATH: 'week08/frontend'
   IMAGE_TAG: ${{ github.sha }}-${{ github.run_id }}
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
 
 jobs:
-  frontend-ci:
+  ci:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: List frontend directory
-        run: ls -al ${{ env.FRONTEND_DIR }}
-
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: ${{ env.FRONTEND_DIR }}/package-lock.json || ''
 
       - name: Install dependencies
         run: |
-          if [ -f ${{ env.FRONTEND_DIR }}/package-lock.json ]; then
-            npm ci --prefix ${{ env.FRONTEND_DIR }}
-          elif [ -f ${{ env.FRONTEND_DIR }}/package.json ]; then
-            npm install --prefix ${{ env.FRONTEND_DIR }}
+          cd ${{ env.FRONTEND_PATH }}
+          echo "Installing dependencies..."
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
           else
-            echo "No package.json found, skipping install"
+            echo "No package.json found. Skipping install."
 
       - name: Run lint
         run: |
-          if npm run lint --prefix ${{ env.FRONTEND_DIR }} --dry-run >/dev/null 2>&1; then
-            npm run lint --prefix ${{ env.FRONTEND_DIR }}
+          cd ${{ env.FRONTEND_PATH }}
+          if npm run lint --dry-run >/dev/null 2>&1; then
+            npm run lint
           else
             echo "No lint script found"
 
       - name: Run tests
         run: |
-          if npm run test --prefix ${{ env.FRONTEND_DIR }} --dry-run >/dev/null 2>&1; then
-            npm run test --prefix ${{ env.FRONTEND_DIR }}
+          cd ${{ env.FRONTEND_PATH }}
+          if npm run test --dry-run >/dev/null 2>&1; then
+            npm run test
           else
             echo "No test script found"
 
-  frontend-build:
-    needs: frontend-ci
+  build-and-push:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Azure Login
@@ -73,26 +71,22 @@ jobs:
         run: |
           echo ${{ secrets.ACR_PASSWORD }} | docker login ${{ env.ACR_LOGIN_SERVER }} -u ${{ secrets.ACR_USERNAME }} --password-stdin
 
-      - name: Build and Push Docker Image
+      - name: Build Docker image
         run: |
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            TAG="prod-${{ env.IMAGE_TAG }}"
-          else
-            TAG="staging-${{ env.IMAGE_TAG }}"
-          fi
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG ${{ env.FRONTEND_DIR }}
-          docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
+          cd ${{ env.FRONTEND_PATH }}
+          TAG="frontend-${{ env.IMAGE_TAG }}"
+          docker build -t ${{ env.ACR_LOGIN_SERVER }}/$TAG .
+          docker push ${{ env.ACR_LOGIN_SERVER }}/$TAG
 
-      - name: Logout Azure
+      - name: Logout from Azure
         run: az logout
         if: always()
 
-  frontend-deploy:
-    needs: frontend-build
+  deploy:
+    needs: build-and-push
     runs-on: ubuntu-latest
-    environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     steps:
-      - name: Checkout Repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Azure Login
@@ -100,7 +94,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Set AKS Credentials
+      - name: Set AKS credentials
         run: |
           az aks get-credentials \
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
@@ -110,14 +104,10 @@ jobs:
       - name: Deploy Frontend
         run: |
           cd k8s
-          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            TAG="prod-${{ env.IMAGE_TAG }}"
-          else
-            TAG="staging-${{ env.IMAGE_TAG }}"
-          fi
-          sed -i "s|latest|$TAG|g" frontend.yaml
+          IMAGE_TAG="frontend-${{ env.IMAGE_TAG }}"
+          sed -i "s|latest|$IMAGE_TAG|g" frontend.yaml
           kubectl apply -f frontend.yaml
 
-      - name: Logout Azure
+      - name: Logout from Azure
         run: az logout
         if: always()
